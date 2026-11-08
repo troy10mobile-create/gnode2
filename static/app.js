@@ -36,6 +36,8 @@ async function loadDashboard() {
 
     // New fields
     if ($('current-reward')) $('current-reward').textContent = Number(status.current_reward || 0).toLocaleString(undefined, {maximumFractionDigits: 8});
+    if ($('difficulty')) $('difficulty').textContent = status.difficulty ?? '—';
+    if ($('next-difficulty')) $('next-difficulty').textContent = status.next_difficulty ?? '—';
     if ($('next-prune')) $('next-prune').textContent = status.next_prune_in ?? '—';
     if ($('chain-length')) $('chain-length').textContent = status.chain_length ?? chain.length;
 
