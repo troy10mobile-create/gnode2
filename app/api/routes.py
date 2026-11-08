@@ -143,7 +143,8 @@ async def mine_once():
     """Mine a single block (kept for compatibility)."""
     if not blockchain:
         raise HTTPException(status_code=500, detail="Blockchain not ready")
-    block = blockchain.mine_block(wallet.address)
+    loop = asyncio.get_event_loop()
+    block = await loop.run_in_executor(None, blockchain.mine_block, wallet.address)
     if block:
         await peer_manager.broadcast_block(block)
         return {"status": "mined", "block": block.to_dict()}
@@ -151,15 +152,20 @@ async def mine_once():
 
 
 async def _continuous_mine_loop():
+    """Run mining in a thread so the FastAPI event loop stays responsive."""
     global _mining_active
     print("[Mining] Continuous mining started")
+    loop = asyncio.get_event_loop()
     while _mining_active:
         try:
-            block = blockchain.mine_block(wallet.address)
+            # Offload the CPU-heavy PoW to a thread — prevents freezing the web server
+            block = await loop.run_in_executor(
+                None, blockchain.mine_block, wallet.address
+            )
             if block:
                 await peer_manager.broadcast_block(block)
-            # Small yield so the event loop stays responsive
-            await asyncio.sleep(0.05)
+            # Brief pause between blocks
+            await asyncio.sleep(0.1)
         except asyncio.CancelledError:
             break
         except Exception as e:
