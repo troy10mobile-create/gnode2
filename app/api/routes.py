@@ -1,15 +1,14 @@
 from fastapi import APIRouter, HTTPException, Request
-from fastapi.responses import HTMLResponse
-from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
 from typing import List, Optional
-from pathlib import Path
+import asyncio
 
 from app.blockchain.models import Block, Transaction
 from app.blockchain.chain import Blockchain
 from app.wallet.wallet import Wallet
 from app.network.p2p import PeerManager
 from app.network.discovery import DiscoveryClient
+from app.config import PRUNE_INTERVAL
 
 router = APIRouter()
 
@@ -19,7 +18,9 @@ wallet: Wallet = None
 peer_manager: PeerManager = None
 discovery: DiscoveryClient = None
 
-templates = Jinja2Templates(directory=str(Path(__file__).resolve().parent.parent.parent / "templates"))
+# Continuous mining state
+_mining_task: Optional[asyncio.Task] = None
+_mining_active: bool = False
 
 
 def init_routes(bc: Blockchain, w: Wallet, pm: PeerManager, disc: DiscoveryClient):
@@ -35,32 +36,30 @@ class SendTxRequest(BaseModel):
     amount: float
 
 
-class BlockReceive(BaseModel):
-    index: int
-    timestamp: float
-    transactions: list
-    previous_hash: str
-    nonce: int
-    difficulty: int
-    hash: str
-    merkle_root: str = ""
-
-
-@router.get("/", response_class=HTMLResponse)
-async def root(request: Request):
-    return templates.TemplateResponse(request, "index.html")
-
-
 @router.get("/api/status")
-async def status():
+async def get_status():
+    next_height = blockchain.height + 1 if blockchain else 1
     return {
         "service": "Blockchain Node",
-        "version": "0.2.0",
+        "version": "0.3.0",
         "address": wallet.address if wallet else None,
         "balance": blockchain.get_balance(wallet.address) if wallet and blockchain else 0,
-        "height": len(blockchain.chain) if blockchain else 0,
+        "height": blockchain.height if blockchain else 0,
         "peers": len(peer_manager.peers) if peer_manager else 0,
-        "pending": len(blockchain.pending_transactions) if blockchain else 0,
+        "pending_transactions": len(blockchain.pending_transactions) if blockchain else 0,
+        "current_reward": blockchain.current_block_reward(next_height) if blockchain else 50,
+        "next_prune_in": PRUNE_INTERVAL - (blockchain.height % PRUNE_INTERVAL) if blockchain else PRUNE_INTERVAL,
+        "is_pruning_height_next": blockchain.is_pruning_height(next_height) if blockchain else False,
+        "mining_active": _mining_active,
+        "chain_length": len(blockchain.chain) if blockchain else 0,
+    }
+
+
+@router.get("/api/mempool")
+async def get_mempool():
+    return {
+        "count": len(blockchain.pending_transactions),
+        "transactions": [tx.to_dict() for tx in blockchain.pending_transactions],
     }
 
 
@@ -89,7 +88,6 @@ async def receive_transaction(tx_data: dict):
         if not Wallet.verify_transaction(tx):
             raise HTTPException(status_code=400, detail="Invalid signature")
         if blockchain.add_transaction(tx):
-            # Optionally re-broadcast (simple version skips to avoid loops)
             return {"status": "accepted", "txid": tx.txid}
         raise HTTPException(status_code=400, detail="Transaction rejected")
     except Exception as e:
@@ -113,7 +111,6 @@ async def send_transaction(req: SendTxRequest):
 @router.post("/api/block")
 async def receive_block(block_data: dict):
     try:
-        # Rebuild transactions
         txs = [Transaction(**t) for t in block_data.get("transactions", [])]
         block = Block(
             index=block_data["index"],
@@ -126,28 +123,20 @@ async def receive_block(block_data: dict):
             merkle_root=block_data.get("merkle_root", ""),
         )
 
-        # Basic validation
-        if block.previous_hash != blockchain.last_block.hash:
-            # Possible fork or we are behind — try sync
+        if blockchain.apply_block(block):
+            print(f"[Node] Accepted block #{block.index} from peer")
+            return {"status": "accepted"}
+        else:
+            # Maybe we are behind — try a sync
             await peer_manager.sync_with_peers()
             return {"status": "ignored_or_synced"}
-
-        if not block.hash.startswith("0" * block.difficulty):
-            raise HTTPException(status_code=400, detail="Invalid proof of work")
-
-        # Accept
-        blockchain.chain.append(block)
-        blockchain.pending_transactions = []  # simple: clear mempool
-        blockchain.recalculate_balances()
-        blockchain.save()
-        print(f"[Node] Accepted block #{block.index} from peer")
-        return {"status": "accepted"}
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
 
 @router.post("/api/mine")
-async def mine():
+async def mine_once():
+    """Mine a single block (kept for compatibility)."""
     if not blockchain:
         raise HTTPException(status_code=500, detail="Blockchain not ready")
     block = blockchain.mine_block(wallet.address)
@@ -155,6 +144,50 @@ async def mine():
         await peer_manager.broadcast_block(block)
         return {"status": "mined", "block": block.to_dict()}
     raise HTTPException(status_code=400, detail="Nothing to mine")
+
+
+async def _continuous_mine_loop():
+    global _mining_active
+    print("[Mining] Continuous mining started")
+    while _mining_active:
+        try:
+            block = blockchain.mine_block(wallet.address)
+            if block:
+                await peer_manager.broadcast_block(block)
+            # Small yield so the event loop stays responsive
+            await asyncio.sleep(0.05)
+        except asyncio.CancelledError:
+            break
+        except Exception as e:
+            print(f"[Mining] Error: {e}")
+            await asyncio.sleep(1)
+    print("[Mining] Continuous mining stopped")
+
+
+@router.post("/api/mining/start")
+async def start_mining():
+    global _mining_task, _mining_active
+    if _mining_active:
+        return {"status": "already_mining"}
+    _mining_active = True
+    _mining_task = asyncio.create_task(_continuous_mine_loop())
+    return {"status": "started"}
+
+
+@router.post("/api/mining/stop")
+async def stop_mining():
+    global _mining_task, _mining_active
+    if not _mining_active:
+        return {"status": "not_mining"}
+    _mining_active = False
+    if _mining_task:
+        _mining_task.cancel()
+        try:
+            await _mining_task
+        except asyncio.CancelledError:
+            pass
+        _mining_task = None
+    return {"status": "stopped"}
 
 
 @router.get("/api/peers")
