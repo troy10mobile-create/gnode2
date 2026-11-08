@@ -7,8 +7,10 @@ from datetime import datetime, timezone
 
 from app.blockchain.models import Block, Transaction
 from app.config import (
-    DATA_DIR, DIFFICULTY, INITIAL_BLOCK_REWARD,
+    DATA_DIR, INITIAL_DIFFICULTY, INITIAL_BLOCK_REWARD,
     REWARD_REDUCTION_INTERVAL, REWARD_REDUCTION_FACTOR,
+    BLOCK_TIME_TARGET, DIFFICULTY_ADJUST_INTERVAL,
+    MIN_DIFFICULTY, MAX_DIFFICULTY,
     GENESIS_TIMESTAMP, GENESIS_PREV_HASH, PRUNE_INTERVAL
 )
 
@@ -45,12 +47,59 @@ class Blockchain:
             transactions=[],
             previous_hash=GENESIS_PREV_HASH,
             nonce=0,
-            difficulty=DIFFICULTY,
+            difficulty=INITIAL_DIFFICULTY,
         )
         genesis.compute_hash()
         self.chain = [genesis]
         self.save()
         print(f"[Blockchain] Genesis block created → {genesis.hash[:16]}...")
+
+    def get_current_difficulty(self) -> int:
+        """Return the difficulty that should be used for the next block."""
+        if len(self.chain) < 2:
+            return INITIAL_DIFFICULTY
+        return self.last_block.difficulty
+
+    def calculate_next_difficulty(self) -> int:
+        """
+        Adjust difficulty every DIFFICULTY_ADJUST_INTERVAL blocks.
+        Compares actual time taken vs target time and scales difficulty.
+        """
+        height = self.height
+        if height < DIFFICULTY_ADJUST_INTERVAL:
+            return INITIAL_DIFFICULTY
+
+        # Only adjust on interval boundaries
+        if (height + 1) % DIFFICULTY_ADJUST_INTERVAL != 0:
+            return self.last_block.difficulty
+
+        # Look at the last DIFFICULTY_ADJUST_INTERVAL blocks that still exist
+        # (after pruning we may have fewer blocks)
+        lookback = min(DIFFICULTY_ADJUST_INTERVAL, len(self.chain) - 1)
+        if lookback < 2:
+            return self.last_block.difficulty
+
+        recent = self.chain[-lookback:]
+        time_taken = recent[-1].timestamp - recent[0].timestamp
+        expected = BLOCK_TIME_TARGET * (lookback - 1)
+
+        if time_taken <= 0:
+            # Blocks came in impossibly fast — increase difficulty
+            ratio = 0.25
+        else:
+            ratio = expected / time_taken
+
+        # Clamp the adjustment so difficulty doesn't jump more than 4x either way
+        ratio = max(0.25, min(4.0, ratio))
+
+        old_diff = self.last_block.difficulty
+        new_diff = int(round(old_diff * ratio))
+        new_diff = max(MIN_DIFFICULTY, min(MAX_DIFFICULTY, new_diff))
+
+        if new_diff != old_diff:
+            print(f"[Difficulty] Adjusted {old_diff} → {new_diff} "
+                  f"(time_taken={time_taken:.1f}s, expected={expected:.1f}s, ratio={ratio:.2f})")
+        return new_diff
 
     # ------------------------------------------------------------------
     # Properties / helpers
@@ -181,16 +230,18 @@ class Blockchain:
             transactions.extend(prune_txs)
             print(f"[Blockchain] Pruning block #{next_index} — snapshotting {len(prune_txs)} addresses")
 
+        difficulty = self.calculate_next_difficulty()
+
         new_block = Block(
             index=next_index,
             timestamp=datetime.now(timezone.utc).timestamp(),
             transactions=transactions,
             previous_hash=self.last_block.hash,
-            difficulty=DIFFICULTY,
+            difficulty=difficulty,
         )
 
         # Proof of Work
-        target = "0" * DIFFICULTY
+        target = "0" * difficulty
         while True:
             new_block.compute_hash()
             if new_block.hash.startswith(target):
