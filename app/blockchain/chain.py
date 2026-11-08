@@ -10,7 +10,7 @@ from app.config import (
     DATA_DIR, INITIAL_DIFFICULTY, INITIAL_BLOCK_REWARD,
     REWARD_REDUCTION_INTERVAL, REWARD_REDUCTION_FACTOR,
     BLOCK_TIME_TARGET, DIFFICULTY_ADJUST_INTERVAL,
-    MIN_DIFFICULTY, MAX_DIFFICULTY,
+    MIN_DIFFICULTY,
     GENESIS_TIMESTAMP, GENESIS_PREV_HASH, PRUNE_INTERVAL
 )
 
@@ -62,8 +62,12 @@ class Blockchain:
 
     def calculate_next_difficulty(self) -> int:
         """
-        Adjust difficulty every DIFFICULTY_ADJUST_INTERVAL blocks.
-        Compares actual time taken vs target time and scales difficulty.
+        Step-based difficulty adjustment.
+        Every DIFFICULTY_ADJUST_INTERVAL blocks, compare actual time vs target.
+        - Too fast  → difficulty + 1
+        - Too slow  → difficulty - 1
+        - About right → no change
+        No artificial upper cap. Difficulty can rise as high as the network requires.
         """
         height = self.height
         if height < DIFFICULTY_ADJUST_INTERVAL:
@@ -73,8 +77,6 @@ class Blockchain:
         if (height + 1) % DIFFICULTY_ADJUST_INTERVAL != 0:
             return self.last_block.difficulty
 
-        # Look at the last DIFFICULTY_ADJUST_INTERVAL blocks that still exist
-        # (after pruning we may have fewer blocks)
         lookback = min(DIFFICULTY_ADJUST_INTERVAL, len(self.chain) - 1)
         if lookback < 2:
             return self.last_block.difficulty
@@ -83,22 +85,24 @@ class Blockchain:
         time_taken = recent[-1].timestamp - recent[0].timestamp
         expected = BLOCK_TIME_TARGET * (lookback - 1)
 
-        if time_taken <= 0:
-            # Blocks came in impossibly fast — increase difficulty
-            ratio = 0.25
-        else:
-            ratio = expected / time_taken
-
-        # Clamp the adjustment so difficulty doesn't jump more than 4x either way
-        ratio = max(0.25, min(4.0, ratio))
-
         old_diff = self.last_block.difficulty
-        new_diff = int(round(old_diff * ratio))
-        new_diff = max(MIN_DIFFICULTY, min(MAX_DIFFICULTY, new_diff))
+
+        # Tolerance band: ±20% is considered "about right"
+        if time_taken <= 0 or time_taken < expected * 0.8:
+            # Blocks too fast → increase difficulty by 1
+            new_diff = old_diff + 1
+            reason = "too fast"
+        elif time_taken > expected * 1.2:
+            # Blocks too slow → decrease difficulty by 1
+            new_diff = max(MIN_DIFFICULTY, old_diff - 1)
+            reason = "too slow"
+        else:
+            new_diff = old_diff
+            reason = "on target"
 
         if new_diff != old_diff:
-            print(f"[Difficulty] Adjusted {old_diff} → {new_diff} "
-                  f"(time_taken={time_taken:.1f}s, expected={expected:.1f}s, ratio={ratio:.2f})")
+            print(f"[Difficulty] {reason}: {old_diff} → {new_diff} "
+                  f"(time_taken={time_taken:.1f}s, expected={expected:.1f}s)")
         return new_diff
 
     # ------------------------------------------------------------------
@@ -194,21 +198,67 @@ class Blockchain:
     # ------------------------------------------------------------------
     # Mining + Pruning
     # ------------------------------------------------------------------
+    def _expected_prune_map(self) -> Dict[str, float]:
+        """
+        Return the exact map of {address: balance} that a valid PRUNE block
+        must contain. This is computed from the current (pre-block) state.
+        """
+        expected = {}
+        for address, balance in self.balances.items():
+            if balance > 1e-12:
+                expected[address] = round(balance, 8)
+        return expected
+
     def _build_prune_transactions(self) -> List[Transaction]:
         """Create one PRUNE self-snapshot tx for every address that currently holds a balance."""
         prune_txs = []
-        # We must use the balances as they stand right before this block
-        for address, balance in list(self.balances.items()):
-            if balance <= 0:
-                continue
+        for address, balance in self._expected_prune_map().items():
             tx = Transaction(
                 sender="PRUNE",
                 recipient=address,
-                amount=round(balance, 8),
+                amount=balance,
             )
             tx.compute_txid()
             prune_txs.append(tx)
         return prune_txs
+
+    def validate_prune_transactions(self, block: Block) -> bool:
+        """
+        Strict validation: a pruning block must contain exactly one PRUNE
+        transaction for every address that has a positive balance, with the
+        exact amount. No extras, no missing, no wrong amounts.
+        """
+        if not self.is_pruning_height(block.index):
+            # Non-prune blocks must not contain any PRUNE txs
+            if any(tx.sender == "PRUNE" for tx in block.transactions):
+                print(f"[Validate] Block #{block.index} contains illegal PRUNE txs")
+                return False
+            return True
+
+        expected = self._expected_prune_map()
+        found: Dict[str, float] = {}
+
+        for tx in block.transactions:
+            if tx.sender != "PRUNE":
+                continue
+            if tx.recipient in found:
+                print(f"[Validate] Duplicate PRUNE for {tx.recipient}")
+                return False
+            found[tx.recipient] = round(tx.amount, 8)
+
+        if set(found.keys()) != set(expected.keys()):
+            missing = set(expected.keys()) - set(found.keys())
+            extra = set(found.keys()) - set(expected.keys())
+            print(f"[Validate] PRUNE address mismatch. Missing={missing}, Extra={extra}")
+            return False
+
+        for addr, amount in expected.items():
+            if abs(found[addr] - amount) > 1e-8:
+                print(f"[Validate] PRUNE amount mismatch for {addr}: "
+                      f"expected {amount}, got {found[addr]}")
+                return False
+
+        return True
 
     def mine_block(self, miner_address: str) -> Optional[Block]:
         next_index = self.height + 1
@@ -247,6 +297,11 @@ class Blockchain:
             if new_block.hash.startswith(target):
                 break
             new_block.nonce += 1
+
+        # Defensive: never accept our own block if PRUNE data is wrong
+        if not self.validate_prune_transactions(new_block):
+            print(f"[Blockchain] CRITICAL: mined block #{next_index} failed PRUNE validation — discarding")
+            return None
 
         # Accept the block
         self.chain.append(new_block)
@@ -317,6 +372,11 @@ class Blockchain:
             if not (self.height == 0 and any(tx.sender == "PRUNE" for tx in block.transactions)):
                 return False
         if not block.hash.startswith("0" * block.difficulty):
+            return False
+
+        # Strict PRUNE validation — every node independently checks the snapshot
+        if not self.validate_prune_transactions(block):
+            print(f"[Node] Rejected block #{block.index} — invalid PRUNE transactions")
             return False
 
         self.chain.append(block)
