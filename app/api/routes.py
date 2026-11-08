@@ -39,6 +39,8 @@ class SendTxRequest(BaseModel):
 @router.get("/api/status")
 async def get_status():
     next_height = blockchain.height + 1 if blockchain else 1
+    current_diff = blockchain.get_current_difficulty() if blockchain else 4
+    next_diff = blockchain.calculate_next_difficulty() if blockchain else 4
     return {
         "service": "Blockchain Node",
         "version": "0.3.0",
@@ -48,6 +50,8 @@ async def get_status():
         "peers": len(peer_manager.peers) if peer_manager else 0,
         "pending_transactions": len(blockchain.pending_transactions) if blockchain else 0,
         "current_reward": blockchain.current_block_reward(next_height) if blockchain else 50,
+        "difficulty": current_diff,
+        "next_difficulty": next_diff,
         "next_prune_in": PRUNE_INTERVAL - (blockchain.height % PRUNE_INTERVAL) if blockchain else PRUNE_INTERVAL,
         "is_pruning_height_next": blockchain.is_pruning_height(next_height) if blockchain else False,
         "mining_active": _mining_active,
