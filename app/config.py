@@ -21,7 +21,7 @@ HTTP_PORT = int(os.getenv("HTTP_PORT", 8332))
 P2P_PORT = int(os.getenv("P2P_PORT", 8333))
 
 # Consensus / Economics
-INITIAL_DIFFICULTY = int(os.getenv("INITIAL_DIFFICULTY", 4))
+INITIAL_DIFFICULTY = int(os.getenv("INITIAL_DIFFICULTY", 1))
 INITIAL_BLOCK_REWARD = float(os.getenv("INITIAL_BLOCK_REWARD", 50))
 REWARD_REDUCTION_INTERVAL = int(os.getenv("REWARD_REDUCTION_INTERVAL", 1_000_000))  # blocks
 REWARD_REDUCTION_FACTOR = float(os.getenv("REWARD_REDUCTION_FACTOR", 0.9))         # 10% reduction
