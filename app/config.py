@@ -28,7 +28,7 @@ REWARD_REDUCTION_FACTOR = float(os.getenv("REWARD_REDUCTION_FACTOR", 0.9))      
 BLOCK_TIME_TARGET = int(os.getenv("BLOCK_TIME_TARGET", 120))  # 2 minutes
 DIFFICULTY_ADJUST_INTERVAL = int(os.getenv("DIFFICULTY_ADJUST_INTERVAL", 10))     # adjust every N blocks
 MIN_DIFFICULTY = 1
-MAX_DIFFICULTY = 12
+# No artificial MAX_DIFFICULTY — rises as high as needed to hold target block time
 MINING_ENABLED = os.getenv("MINING_ENABLED", "true").lower() == "true"
 
 # Pruning
