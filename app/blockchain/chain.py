@@ -32,9 +32,37 @@ class Blockchain:
             with open(self.chain_file, "r") as f:
                 data = json.load(f)
             self.chain = [Block(**b) for b in data]
+            # Re-apply pruning compaction on every load so old history stays gone
+            self._compact_to_latest_prune()
             self.recalculate_balances()
         else:
             self.create_genesis_block()
+
+    def _compact_to_latest_prune(self):
+        """
+        Keep only Genesis + the latest pruning block + everything after it.
+        Called on load and after receiving blocks so history cannot reappear.
+        """
+        if len(self.chain) <= 1:
+            return
+
+        latest_prune_pos = None
+        for i in range(len(self.chain) - 1, 0, -1):
+            if any(tx.sender == "PRUNE" for tx in self.chain[i].transactions):
+                latest_prune_pos = i
+                break
+
+        if latest_prune_pos is None:
+            return
+
+        genesis = self.chain[0]
+        kept = [genesis] + self.chain[latest_prune_pos:]
+        if len(kept) < len(self.chain):
+            removed = len(self.chain) - len(kept)
+            self.chain = kept
+            print(f"[Blockchain] Compacted chain on load/sync — removed {removed} pre-prune blocks. "
+                  f"Now length={len(self.chain)}")
+            self.save()
 
     def save(self):
         with open(self.chain_file, "w") as f:
@@ -321,13 +349,14 @@ class Blockchain:
     def _perform_prune(self, prune_block: Block):
         """
         Mandatory history wipe.
-        Keep only: Genesis + the new pruning block (+ any blocks that somehow came after, but normally none).
+        Keep only: Genesis + the new pruning block + any blocks after it.
         """
         genesis = self.chain[0]
-        # Everything between genesis and the prune block is discarded
-        self.chain = [genesis, prune_block]
-        print(f"[Blockchain] PRUNE complete. Chain compacted to Genesis + block #{prune_block.index}. "
-              f"History before it has been permanently deleted.")
+        # Keep genesis, the prune block, and anything that came after it
+        after = [b for b in self.chain if b.index > prune_block.index]
+        self.chain = [genesis, prune_block] + after
+        print(f"[Blockchain] PRUNE complete. Chain compacted to Genesis + block #{prune_block.index} "
+              f"+ {len(after)} newer blocks. Pre-prune history permanently deleted.")
 
     # ------------------------------------------------------------------
     # Validation & Sync
@@ -396,9 +425,11 @@ class Blockchain:
             return False
 
         self.chain = new_chain
+        # Always re-compact after accepting a foreign chain
+        self._compact_to_latest_prune()
         self.recalculate_balances()
         self.save()
-        print(f"[Blockchain] Chain replaced. New height: {self.height}")
+        print(f"[Blockchain] Chain replaced. New height: {self.height}, length: {len(self.chain)}")
         return True
 
     def get_chain_dict(self) -> List[dict]:
