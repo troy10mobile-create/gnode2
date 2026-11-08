@@ -21,11 +21,14 @@ HTTP_PORT = int(os.getenv("HTTP_PORT", 8332))
 P2P_PORT = int(os.getenv("P2P_PORT", 8333))
 
 # Consensus / Economics
-DIFFICULTY = int(os.getenv("DIFFICULTY", 4))
+INITIAL_DIFFICULTY = int(os.getenv("INITIAL_DIFFICULTY", 4))
 INITIAL_BLOCK_REWARD = float(os.getenv("INITIAL_BLOCK_REWARD", 50))
 REWARD_REDUCTION_INTERVAL = int(os.getenv("REWARD_REDUCTION_INTERVAL", 1_000_000))  # blocks
 REWARD_REDUCTION_FACTOR = float(os.getenv("REWARD_REDUCTION_FACTOR", 0.9))         # 10% reduction
 BLOCK_TIME_TARGET = int(os.getenv("BLOCK_TIME_TARGET", 120))  # 2 minutes
+DIFFICULTY_ADJUST_INTERVAL = int(os.getenv("DIFFICULTY_ADJUST_INTERVAL", 10))     # adjust every N blocks
+MIN_DIFFICULTY = 1
+MAX_DIFFICULTY = 12
 MINING_ENABLED = os.getenv("MINING_ENABLED", "true").lower() == "true"
 
 # Pruning
