@@ -13,7 +13,7 @@ DATA_DIR.mkdir(parents=True, exist_ok=True)
 DISCOVERY_URL = os.getenv("DISCOVERY_URL", "").rstrip("/")
 NETWORK_SECRET = os.getenv("NETWORK_SECRET", "dev-secret-change-me")
 NETWORK_ID = os.getenv("NETWORK_ID", "mainnet")
-APP_VERSION = os.getenv("APP_VERSION", "0.2.0")
+APP_VERSION = os.getenv("APP_VERSION", "0.3.0")
 PUBLIC_URL = os.getenv("PUBLIC_URL", "").rstrip("/")
 
 # Ports
@@ -22,12 +22,17 @@ P2P_PORT = int(os.getenv("P2P_PORT", 8333))
 
 # Consensus / Economics
 DIFFICULTY = int(os.getenv("DIFFICULTY", 4))
-BLOCK_REWARD = int(os.getenv("BLOCK_REWARD", 50))
-BLOCK_TIME_TARGET = int(os.getenv("BLOCK_TIME_TARGET", 30))  # seconds (short for testing)
+INITIAL_BLOCK_REWARD = float(os.getenv("INITIAL_BLOCK_REWARD", 50))
+REWARD_REDUCTION_INTERVAL = int(os.getenv("REWARD_REDUCTION_INTERVAL", 1_000_000))  # blocks
+REWARD_REDUCTION_FACTOR = float(os.getenv("REWARD_REDUCTION_FACTOR", 0.9))         # 10% reduction
+BLOCK_TIME_TARGET = int(os.getenv("BLOCK_TIME_TARGET", 120))  # 2 minutes
 MINING_ENABLED = os.getenv("MINING_ENABLED", "true").lower() == "true"
 
+# Pruning
+PRUNE_INTERVAL = int(os.getenv("PRUNE_INTERVAL", 10))  # every Nth block is a pruning block
+
 # Coinbase maturity (blocks before coinbase can be spent)
-COINBASE_MATURITY = 5  # lower than Bitcoin for easier testing
+COINBASE_MATURITY = 5
 
 # Genesis
 GENESIS_TIMESTAMP = 1231006505
